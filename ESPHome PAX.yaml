@@ -1,0 +1,143 @@
+substitutions:
+  device_name: fan-speed-controlled
+  friendly_name: "PAX Badrumsfläkt"
+  device_description: "Fan with speed control"
+  humidity_threshold_low: "35" # At what humidity, in celcius, should the fan turn on to its minimum speed
+  humidity_threshold_high: "60" # At what humidity, in celcius, should the fan turn on to its maximum speed
+  minimum_fan_speed: "25" # What is the minimum fan speed, as a percentage
+
+  #buzzer_pin: GPIO15 #alarm
+  #dallas_pin: GPIO16 # dalla 18b20 temp one wire
+  scl_pin: GPIO1 
+  sda_pin: GPIO2 
+  fan_pin: GPIO0
+  relay_pin: GPIO3
+#  battery_pin: GPIO11 
+#  ldr_pin: GPIO35 
+#  left_button_pin: GPIO26 
+#  mid_button_pin: GPIO27 
+#  right_button_pin: GPIO14 
+#servo_pin: GPIO9 #Servo controler for turning eggs
+
+esphome:
+  name: '${device_name}'
+  comment: '${device_description}'
+#  platform: ESP8266
+
+esp8266:
+  board: esp01_1m
+
+
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "ziWukxxJzOrCArpxNtY7bJ3SifmLGNoIgngZhfud8SQ="
+
+ota:
+  password: "240375423db553e9bbd6e09a92d9a45b"
+  safe_mode: true
+  reboot_timeout: 10min
+  num_attempts: 5
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Pax-Badrumsflakt"
+    password: "HgflucsBuuqx"
+
+captive_portal:
+
+
+# Defines the pins for the temperature sensor
+i2c:
+  sda: $sda_pin
+  scl: $scl_pin
+  scan: true
+  id: bus_a
+
+# PWM output for the fan speed control
+output:
+  - platform: esp8266_pwm
+    pin: $fan_pin
+    frequency: 25000 Hz
+    id: pwm_output
+
+# Hidden switch object to control the relay
+switch:
+  - platform: gpio
+    name: "fan_relay"
+    id: fan_relay
+    pin: $relay_pin
+    internal: true
+
+# BME280 Humidity, temperatur, pressure sensor
+# Calls a script to set the fan state/speed whenever the humidity value changes
+sensor:
+  - platform: bme280_i2c
+    i2c_id: bus_a
+    address: 0x77
+    update_interval: 5s
+    
+    temperature:
+      name: "${device_description} Temperature"
+      id: temperature_sensor
+      oversampling: 16x
+    
+    pressure:
+      name: "${device_description} Pressure"
+      id: pressure_sensor
+      oversampling: 16x
+
+    humidity:
+      name: "${device_description} Humidity"
+      id: humidity_sensor
+      oversampling: 16x
+      on_value:
+        then:
+          - script.execute: set_fan_state     
+        
+
+# The actual fan entity presented to Home Assistant
+fan:
+  - platform: speed
+    output: pwm_output
+    name: "${device_description}"
+    id: "the_fan"
+    on_turn_on:
+    - switch.turn_on: fan_relay
+    on_turn_off:
+    - switch.turn_off: fan_relay
+
+# Sets the speed of the fan based on a linear calculation
+# between the high and low humidity thresholds and
+# the minimum specified fan speed
+script:
+  - id: set_fan_state
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(humidity_sensor).state < id(${humidity_threshold_low});
+          then:
+            - fan.turn_off: the_fan
+          else:
+            - fan.turn_on:
+                id: the_fan
+                speed: !lambda |-
+                  if (id(humidity_sensor).state >= id(${humidity_threshold_high})) {
+                    // Over upper threshold, fan speed at maximum
+                    ESP_LOGD("Fan speed calc", "Humidity is above or equal to upper threshold so setting to max");
+                    return 100;
+                  }
+                  else {
+                    float calc_speed = ((100-id(${minimum_fan_speed})) / (id(${humidity_threshold_high})-id(${humidity_threshold_low})))*(id(humidity_sensor).state-id(${humidity_threshold_low}))+id(${minimum_fan_speed});
+                    ESP_LOGD("Fan speed calc", "calculated speed = %f", calc_speed);
+                    return calc_speed;
+                  }
